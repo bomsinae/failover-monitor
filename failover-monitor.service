@@ -1,0 +1,15 @@
+[Unit]
+Description=Active-Standby Failover Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStartPre=/bin/bash -c 'echo "unknown" > /var/run/failover_monitor_state'
+ExecStart=/usr/bin/python3 /opt/failover-monitor/failover_monitor.py
+Restart=always
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
