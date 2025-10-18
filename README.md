@@ -21,7 +21,7 @@ Active-Standby 구조에서 Primary 서버의 상태를 모니터링하고 장�
 
 1. 프로젝트 파일을 다운로드합니다:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/bomsinae/failover-monitor.git
    cd failover-monitor
    ```
 
