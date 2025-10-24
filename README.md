@@ -7,6 +7,7 @@ Cloudflare Zero Trust 터널의 상태를 모니터링하고 터널이 다운되
 - **Cloudflare API 모니터링**: Cloudflare Zero Trust 터널의 실시간 상태를 API를 통해 확인
 - **다중 터널 지원**: 여러 개의 Cloudflare 계정/터널을 동시에 모니터링
 - **자동 장애 조치**: 터널이 unhealthy 상태가 되면 지정된 로컬 서비스를 자동으로 시작
+- **다중 클라이언트 감지**: 터널에 2개 이상의 서로 다른 client_id가 연결되면 로컬 서비스를 자동으로 중지
 - **네트워크 연결 확인**: 게이트웨이 ping 체크를 통한 로컬 네트워크 상태 확인
 - **systemd 통합**: 시스템 서비스로 등록되어 부팅 시 자동 시작
 - **상세한 로깅**: 모든 모니터링 활동과 장애 조치 내역을 기록
@@ -131,11 +132,16 @@ systemctl status cloudflared  # 설정한 서비스명으로 변경
 
 3. **API 요청**: `https://api.cloudflare.com/client/v4/accounts/{account_id}/cfd_tunnel/{tunnel_id}` 엔드포인트를 사용하여 터널 상태를 조회합니다.
 
-4. **상태 판정**: API 응답에서 `"status": "healthy"`인지 확인합니다.
+4. **상태 및 연결 분석**: 
+   - API 응답에서 `"status": "healthy"`인지 확인
+   - `connections` 배열에서 고유한 `client_id` 개수를 확인
 
-5. **장애 조치**: 터널이 unhealthy 상태인 경우 해당 터널의 백업 서비스를 자동으로 시작합니다.
+5. **우선순위 기반 장애 조치**:
+   - **최우선**: 2개 이상의 서로 다른 `client_id`가 감지되면 → **로컬 서비스 중지** (Primary 서버 복구됨)
+   - **차순위**: 터널이 unhealthy 상태면 → **로컬 서비스 시작** (Backup 서버 활성화)
+   - **기본**: 터널이 healthy이고 client_id가 1개면 → **아무것도 안함**
 
-> **참고**: 터널이 healthy 상태일 때는 별도의 작업을 수행하지 않습니다. 오직 터널이 다운되었을 때만 로컬 서비스를 시작합니다.
+> **참고**: 다중 client_id 감지 기능을 통해 Primary 서버가 복구되었을 때 Backup 서버의 서비스를 자동으로 중지합니다.
 
 ## 디렉토리 구조
 
@@ -222,28 +228,37 @@ sudo systemctl restart failover-monitor
 
 ## 주의사항
 
-1. **서비스 자동 중지 없음**: 터널이 복구되어도 로컬 서비스를 자동으로 중지하지 않습니다.
+1. **자동 복구 기능**: Primary 서버가 복구되면 다중 client_id 감지를 통해 Backup 서버의 서비스를 자동으로 중지합니다.
 2. **중복 서비스 시작**: 터널이 다운될 때마다 서비스 시작 명령을 실행합니다 (이미 실행 중이어도).
 3. **빠른 체크 간격**: 기본 3초 간격으로 체크하므로 API 사용량에 주의하세요.
+4. **Client ID 기반 판단**: 터널의 connections에서 서로 다른 client_id 개수로 Primary/Backup 서버 상태를 판단합니다.
 
 
-## 로그 출력 예제
+### 로그 출력 예제
 ```
 2025-10-24 10:30:15 [INFO] Cloudflare Tunnel Monitor started.
 2025-10-24 10:30:15 [INFO] Gateway IP: 192.168.1.1
-2025-10-24 10:30:15 [INFO] Monitoring 2 tunnel(s)
+2025-10-24 10:30:15 [INFO] Monitoring 1 tunnel(s)
 2025-10-24 10:30:15 [INFO] Check interval: 3 seconds
-2025-10-24 10:30:16 [INFO] Tunnel abc123 status: healthy
-2025-10-24 10:30:16 [INFO] Tunnel def456 status: healthy
-2025-10-24 10:30:19 [WARNING] Gateway 192.168.1.1 unreachable. Skipping tunnel monitoring.
-2025-10-24 10:30:22 [INFO] Tunnel abc123 status: down
-2025-10-24 10:30:22 [ERROR] Tunnel abc123 is down. Starting local service cloudflared_1
-2025-10-24 10:30:25 [INFO] Tunnel abc123 status: healthy
-2025-10-24 10:30:28 [INFO] Tunnel abc123 status: down
-2025-10-24 10:30:28 [ERROR] Tunnel abc123 is down. Starting local service cloudflared_1
+2025-10-24 10:30:16 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b status: healthy
+2025-10-24 10:30:16 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b has 1 unique client_id(s)
+2025-10-24 10:30:19 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b status: down
+2025-10-24 10:30:19 [ERROR] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b is down. Starting local service cloudflared
+2025-10-24 10:30:22 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b status: healthy
+2025-10-24 10:30:22 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b has 2 different client_ids: ['03426190-6a6a-4b6e-acbe-ccb7e86589eb', 'a0bc2364-82d4-4cf3-bad4-4b9b887ad8fb']
+2025-10-24 10:30:22 [INFO] Multiple client_ids detected for tunnel d8cc543b-7950-4e22-b0d0-97975a93190b. Stopping local service cloudflared
+2025-10-24 10:30:25 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b status: healthy
+2025-10-24 10:30:25 [INFO] Tunnel d8cc543b-7950-4e22-b0d0-97975a93190b has 1 unique client_id(s)
 ```
 
-> **참고**: 터널이 healthy 상태로 복구되어도 로컬 서비스를 중지하지 않습니다. 필요시 수동으로 서비스를 중지해야 합니다.
+### 동작 시나리오
+
+1. **정상 상태**: 터널이 healthy이고 1개의 client_id만 있음 → 아무것도 안함
+2. **장애 발생**: 터널이 down됨 → 로컬 서비스 시작 (Backup 서버 활성화)
+3. **Primary 복구**: 터널이 healthy이고 2개의 client_id 감지 → 로컬 서비스 중지 (Backup 서버 비활성화)
+4. **완전 복구**: 터널이 healthy이고 1개의 client_id만 있음 → 정상 상태 유지
+
+> **참고**: Primary 서버가 복구되면 자동으로 Backup 서버의 서비스를 중지하여 이중 연결을 방지합니다.
 
 ## 라이선스
 

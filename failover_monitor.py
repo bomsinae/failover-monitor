@@ -31,8 +31,14 @@ def ping(host: str, count: int = 1, timeout: int = 1) -> bool:
         return False
 
 
-def check_tunnel_status(account_id: str, tunnel_id: str, token: str) -> bool:
-    """Check Cloudflare tunnel status via API."""
+def check_tunnel_status(account_id: str, tunnel_id: str, token: str) -> tuple[bool, bool]:
+    """Check Cloudflare tunnel status via API.
+
+    Returns:
+        tuple[bool, bool]: (is_healthy, should_stop_service)
+        - is_healthy: True if tunnel status is 'healthy'
+        - should_stop_service: True if multiple different client_ids are found
+    """
     url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/cfd_tunnel/{tunnel_id}"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -44,22 +50,44 @@ def check_tunnel_status(account_id: str, tunnel_id: str, token: str) -> bool:
         response.raise_for_status()
 
         data = response.json()
-        if "result" in data and "status" in data["result"]:
-            status = data["result"]["status"]
+        if "result" in data:
+            result = data["result"]
+
+            # Check tunnel status
+            status = result.get("status", "")
+            is_healthy = status == "healthy"
             logging.info(f"Tunnel {tunnel_id} status: {status}")
-            return status == "healthy"
+
+            # Check connections for multiple client_ids
+            connections = result.get("connections", [])
+            client_ids = set()
+            for conn in connections:
+                client_id = conn.get("client_id")
+                if client_id:
+                    client_ids.add(client_id)
+
+            should_stop_service = len(client_ids) >= 2
+
+            if should_stop_service:
+                logging.info(
+                    f"Tunnel {tunnel_id} has {len(client_ids)} different client_ids: {list(client_ids)}")
+            else:
+                logging.info(
+                    f"Tunnel {tunnel_id} has {len(client_ids)} unique client_id(s)")
+
+            return is_healthy, should_stop_service
         else:
             logging.error(
                 f"Unexpected API response for tunnel {tunnel_id}: {data}")
-            return False
+            return False, False
 
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to check tunnel {tunnel_id} status: {e}")
-        return False
+        return False, False
     except json.JSONDecodeError as e:
         logging.error(
             f"Failed to parse API response for tunnel {tunnel_id}: {e}")
-        return False
+        return False, False
 
 
 def systemctl(action: str, service_name: str):
@@ -101,11 +129,17 @@ def main():
             token = tunnel["token"]
             service = tunnel["service"]
 
-            # Check tunnel status
-            is_healthy = check_tunnel_status(account_id, tunnel_id, token)
+            # Check tunnel status and client connections
+            is_healthy, should_stop_service = check_tunnel_status(
+                account_id, tunnel_id, token)
 
-            if not is_healthy:
-                # Tunnel is unhealthy - 로컬 서비스 시작
+            if should_stop_service:
+                # Multiple client_ids detected - stop local service
+                logging.info(
+                    f"Multiple client_ids detected for tunnel {tunnel_id}. Stopping local service {service}")
+                systemctl("stop", service)
+            elif not is_healthy:
+                # Tunnel is unhealthy - start local service
                 logging.error(
                     f"Tunnel {tunnel_id} is down. Starting local service {service}")
                 systemctl("start", service)
