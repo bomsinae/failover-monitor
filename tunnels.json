@@ -1,0 +1,18 @@
+{
+  "gateway_ip": "192.168.1.1",
+  "check_interval": 3,
+  "tunnels": [
+    {
+      "account_id": "your_account_id_1",
+      "tunnel_id": "your_tunnel_id_1",
+      "token": "your_api_token_1",
+      "service": "cloudflared_1"
+    },
+    {
+      "account_id": "your_account_id_2",
+      "tunnel_id": "your_tunnel_id_2",
+      "token": "your_api_token_2",
+      "service": "cloudflared_2"
+    }
+  ]
+}

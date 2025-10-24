@@ -4,10 +4,10 @@ import json
 import time
 import subprocess
 import logging
+import requests
 from datetime import datetime
 
-CONFIG_PATH = "/opt/failover-monitor/config.json"
-STATE_FILE = "/var/run/failover_monitor_state"
+CONFIG_PATH = "/opt/failover-monitor/tunnels.json"
 LOG_FILE = "/var/log/failover_monitor.log"
 
 logging.basicConfig(
@@ -15,13 +15,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
-
-
-def init_state():
-    """Reset state on startup."""
-    with open(STATE_FILE, "w") as f:
-        f.write("unknown")
-    logging.info("State file initialized to 'unknown' on startup.")
 
 
 def ping(host: str, count: int = 1, timeout: int = 1) -> bool:
@@ -38,6 +31,37 @@ def ping(host: str, count: int = 1, timeout: int = 1) -> bool:
         return False
 
 
+def check_tunnel_status(account_id: str, tunnel_id: str, token: str) -> bool:
+    """Check Cloudflare tunnel status via API."""
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/cfd_tunnel/{tunnel_id}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+        if "result" in data and "status" in data["result"]:
+            status = data["result"]["status"]
+            logging.info(f"Tunnel {tunnel_id} status: {status}")
+            return status == "healthy"
+        else:
+            logging.error(
+                f"Unexpected API response for tunnel {tunnel_id}: {data}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to check tunnel {tunnel_id} status: {e}")
+        return False
+    except json.JSONDecodeError as e:
+        logging.error(
+            f"Failed to parse API response for tunnel {tunnel_id}: {e}")
+        return False
+
+
 def systemctl(action: str, service_name: str):
     """Run systemctl command."""
     try:
@@ -47,70 +71,47 @@ def systemctl(action: str, service_name: str):
         logging.error(f"Failed to {action} {service_name}: {e}")
 
 
-def read_state() -> str:
-    """Read last known state (active_alive or active_dead)."""
-    try:
-        with open(STATE_FILE, "r") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return "unknown"
-
-
-def write_state(state: str):
-    """Save current state."""
-    with open(STATE_FILE, "w") as f:
-        f.write(state)
-
-
 def main():
-    init_state()
-
-    # Load config
+    # Load tunnel configurations
     with open(CONFIG_PATH, "r") as f:
         config = json.load(f)
 
     gateway_ip = config["gateway_ip"]
-    active_ip = config["active_ip"]
-    services = config["services_to_manage"]
-    interval = config["ping_interval"]
-    threshold = config["ping_fail_threshold"]
+    tunnels = config["tunnels"]
+    check_interval = config.get("check_interval", 3)  # 기본값 3초
 
-    fail_count = 0
-    last_state = read_state()
+    logging.info("Cloudflare Tunnel Monitor started.")
+    logging.info(f"Gateway IP: {gateway_ip}")
+    logging.info(f"Monitoring {len(tunnels)} tunnel(s)")
+    logging.info(f"Check interval: {check_interval} seconds")
 
-    logging.info("Failover Monitor started.")
-
+    # Main monitoring loop
     while True:
-        # 1️⃣ 게이트웨이 체크 - 내 네트워크 상태 확인
+        # 1. 게이트웨이 핑 체크 - 네트워크 연결 상태 확인
         if not ping(gateway_ip):
-            logging.warning("Gateway unreachable. Skipping active monitoring.")
-            time.sleep(interval)
+            logging.warning(
+                f"Gateway {gateway_ip} unreachable. Skipping tunnel monitoring.")
+            time.sleep(check_interval)
             continue
 
-        # 2️⃣ Active 서버 체크
-        if ping(active_ip):
-            fail_count = 0
-            if last_state != "active_alive":
-                logging.info(
-                    "Active server is back online. Stopping standby services.")
-                for svc in services:
-                    systemctl("stop", svc)
-                write_state("active_alive")
-                last_state = "active_alive"
-        else:
-            fail_count += 1
-            logging.warning(
-                f"Ping to active failed ({fail_count}/{threshold})")
+        # 2. 각 터널 상태 확인
+        for tunnel in tunnels:
+            account_id = tunnel["account_id"]
+            tunnel_id = tunnel["tunnel_id"]
+            token = tunnel["token"]
+            service = tunnel["service"]
 
-            if fail_count >= threshold and last_state != "active_dead":
+            # Check tunnel status
+            is_healthy = check_tunnel_status(account_id, tunnel_id, token)
+
+            if not is_healthy:
+                # Tunnel is unhealthy - 로컬 서비스 시작
                 logging.error(
-                    "Active server is down. Starting local standby services.")
-                for svc in services:
-                    systemctl("start", svc)
-                write_state("active_dead")
-                last_state = "active_dead"
+                    f"Tunnel {tunnel_id} is down. Starting local service {service}")
+                systemctl("start", service)
 
-        time.sleep(interval)
+        # Wait before next check
+        time.sleep(check_interval)
 
 
 if __name__ == "__main__":
