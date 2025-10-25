@@ -5,7 +5,6 @@ import time
 import subprocess
 import logging
 import requests
-from datetime import datetime
 
 CONFIG_PATH = "/opt/failover-monitor/tunnels.json"
 LOG_FILE = "/var/log/failover_monitor.log"
