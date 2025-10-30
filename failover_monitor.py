@@ -5,6 +5,7 @@ import time
 import subprocess
 import logging
 import requests
+from typing import Tuple
 
 CONFIG_PATH = "/opt/failover-monitor/tunnels.json"
 LOG_FILE = "/var/log/failover_monitor.log"
@@ -30,7 +31,7 @@ def ping(host: str, count: int = 1, timeout: int = 1) -> bool:
         return False
 
 
-def check_tunnel_status(account_id: str, tunnel_id: str, token: str) -> tuple[bool, bool]:
+def check_tunnel_status(account_id: str, tunnel_id: str, token: str) -> Tuple[bool, bool]:
     """Check Cloudflare tunnel status via API.
 
     Returns:
